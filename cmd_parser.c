@@ -33,6 +33,7 @@
 #include "machine.h"
 #include "rtl837x_leds.h"
 #include "phy.h"
+#include "poe.h"
 
 #pragma codeseg BANK2
 #pragma constseg BANK2
@@ -1886,6 +1887,24 @@ void cmd_parser(void) __banked
 			parse_sfp();
 		} else if (cmd_compare(0, "stat")) {
 			port_stats_print();
+		} else if (cmd_compare(0, "poe")) {
+#ifdef POE_PRESENT
+			if (cmd_words_len >= 2 && cmd_compare(1, "status")) {
+				poe_status_print();
+			} else if (cmd_words_len >= 2 && cmd_compare(1, "load")) {
+				poe_bringup();
+			} else if (cmd_words_len >= 4 && cmd_compare(1, "port")
+				   && atoi_byte(cmd_words_b[2])
+				   && atoi_results_u8 >= 1 && atoi_results_u8 <= machine.poe.n_ports) {
+				poe_port_set(atoi_results_u8 - 1, cmd_compare(3, "on") ? 1 : 0);
+			} else if (cmd_words_len >= 3 && cmd_compare(1, "global")) {
+				poe_global_set(cmd_compare(2, "on") ? 1 : 0);
+			} else {
+				print_string("usage: poe status | load | port <1-8> <on|off> | global <on|off>\n");
+			}
+#else
+			print_string("PoE not supported on this machine\n");
+#endif
 		} else if (cmd_compare(0, "flash") && cmd_words_len == 2) {
 			uint8_t c = cmd_buffer[cmd_words_b[1]];
 			if (c == 's') {

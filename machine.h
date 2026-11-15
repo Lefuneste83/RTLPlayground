@@ -26,6 +26,16 @@
 
 #include  MACHINE_INC(MACHINE_DEF_DIR,MACHINE_NAME.h)
 
+/*
+ * PoE: a board with a software-controlled PSE defines POE_CHIP_<chip> in its
+ * machine/<MACHINE>.h. That selects the driver (poe_rtl8238.c) and implies
+ * POE_PRESENT, which gates the `poe` command, the boot bring-up and the PSE
+ * image embedding in the Makefile. Boards without it compile no PoE code.
+ */
+#if defined(POE_CHIP_RTL8238)
+#define POE_PRESENT
+#endif
+
 
 #ifndef MACHINE_CHIPSET
 #error "MACHINE_CHIPSET shall be defined in <machine>.h file"
@@ -77,6 +87,16 @@ struct high_leds {
 	uint8_t reserved : 2;
 };
 
+// PoE PSE chip type for struct machine.poe (POE_NONE = no software-controlled PoE)
+enum { POE_NONE = 0, POE_RTL8238 = 1 };
+
+struct poe_config {
+	uint8_t chip;		// POE_NONE / POE_RTL8238
+	uint8_t addr0;		// first PSE controller I2C address (ports 1-4)
+	uint8_t addr1;		// second controller (ports 5-8), 0 = none
+	uint8_t n_ports;	// number of PoE ports
+};
+
 struct sfp_port
 {
 	uint8_t pin_detect; // gpio number 0-63, 0xFF = don't have it?
@@ -114,6 +134,8 @@ struct machine {
 	// random resets. Costs management-plane speed only, the ASIC keeps
 	// forwarding in hardware.
 	uint8_t flash_sio;
+	// PoE PSE descriptor; chip = POE_NONE (all zero) on boards without PoE
+	struct poe_config poe;
 };
 
 struct machine_runtime

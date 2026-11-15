@@ -35,6 +35,7 @@
 #include "httpd/page_impl.h"
 #include "boot.h"
 #include "sfp.h"
+#include "poe.h"
 
 extern __code const struct machine machine;
 extern __xdata uint32_t flash_size;
@@ -1683,6 +1684,12 @@ void main(void)
 	else
 		rtl8372_init();
 	delay(1000);
+
+#ifdef POE_PRESENT
+	// Bring up PoE after the PHY init, as the OEM firmware does: upload the
+	// PSE firmware and enable all ports.
+	poe_bringup();
+#endif
 
 	check_and_flash_update_image();
 
