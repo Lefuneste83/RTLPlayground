@@ -3,7 +3,7 @@
 /*
  * PCB-AFG-SWTG218ANS V1.2-17459 (RealHD PSW8-25MG / ZX-AFGW-SWTG218ANS-150,
  * boards shipped with OEM firmware V100.x). Same switch as V2.0.2_23308 but a
- * different LED wiring. VERSION 1.0.0
+ * different LED wiring. VERSION 1.0.1
  *
  * LED configuration taken from the OEM V100.9.9 LED init routine:
  *   LED1_0_SET0 = 0x01410141, LED3_2_SET0 = 0x01410174, LED3_0_SET1[7:0] = 0
@@ -46,6 +46,6 @@ __code const struct machine machine = {
 #ifdef POE_PRESENT
 	// Two PSE controllers on bit-banged I2C, SCL = GPIO46 / SDA = GPIO47 (as in
 	// OEM V100.9.9): 0x20 = ports 1-4, 0x21 = ports 5-8.
-	.poe = { .chip = POE_RTL8238, .addr0 = 0x20, .addr1 = 0x21, .n_ports = 8 },
+	.poe = { .chip = POE_RTL8238, .addr0 = 0x20, .addr1 = 0x21, .n_ports = 8, .budget_w = 150, .ch_rev = 0x00 },
 #endif
 };

@@ -83,6 +83,14 @@ section.tab.act{display:block}
 .card h2 .hint{font-weight:400;font-size:12px;color:var(--fg2);margin-left:8px}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;align-items:start}
 .grid2 .card{margin-bottom:0}
+.poecol,#poecard{display:none}
+body.haspoe .poecol{display:table-cell}
+body.haspoe #poecard{display:block}
+#poebar{height:6px;border-radius:3px;background:var(--bd);overflow:hidden;margin:6px 0 12px}
+#poebar i{display:block;height:100%;width:0;background:var(--ok);transition:width .3s}
+#poebar i.hot{background:var(--warn)}
+#poet th,#poet td{padding-left:5px;padding-right:5px;white-space:nowrap}
+.poecell{display:flex;align-items:center;gap:8px;white-space:nowrap}
 table.t{width:100%;border-collapse:collapse;font-size:13px}
 table.t th{
   text-align:left;font-weight:600;color:var(--fg2);font-size:12px;
@@ -250,13 +258,20 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
             <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_link">Link</th><th class="num" data-i18n="d_txpps">TX pps</th><th class="num" data-i18n="d_rxpps">RX pps</th><th class="num" data-i18n="d_txbad">TX bad</th><th class="num" data-i18n="d_rxbad">RX bad</th></tr></thead>
             <tbody></tbody></table></div>
         </div>
+        <div class="card" id="poecard"><h2><span data-i18n="d_poe">PoE</span> <span class="hint" data-i18n="d_poe_h">power delivery, live</span></h2>
+          <div class="small"><span id="poesum"></span> <span id="poefw"></span></div>
+          <div id="poebar"><i></i></div>
+          <div class="scrollx"><table class="t" id="poet">
+            <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="poe_state">State</th><th class="num" data-i18n="poe_class">Class</th><th class="num">V</th><th class="num">mA</th><th class="num">W</th><th class="num">Wh</th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
       </div>
     </section>
 
     <section class="tab" id="tab-ports">
       <div class="card"><h2 data-i18n="pt_title">Port configuration</h2>
         <div class="scrollx"><table class="t" id="ptable">
-          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_conn">Devices learned</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th></th></tr></thead>
+          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_conn">Devices learned</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th class="poecol">PoE</th><th></th></tr></thead>
           <tbody></tbody></table></div>
         <p class="small mut" style="margin-top:8px" data-i18n="pt_sfp_note">SFP speed is set per slot and is not saved in the startup config.</p>
       </div>

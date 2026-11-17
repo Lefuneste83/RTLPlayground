@@ -1,6 +1,14 @@
 /*
  * Driver for the Realtek RTL8238B/C (and RTL8239-family) PoE PSE controllers.
- * VERSION 1.0.0
+ * VERSION 1.3.0 - web UI support: /poe.json (send_poe), per-port admin mask
+ *                 applied after the startup config (poe_apply, no flicker on
+ *                 ports saved as off), `poe port N reset`, energy counters and
+ *                 PD connect/remove events (poe_tick)
+ * VERSION 1.2.0 - poe_hold(): ports off right after flash init, so devices are
+ *                 powered once (after the upload) instead of twice at boot;
+ *                 host poll default off (no PSE watchdog seen); `poe info` shows both
+ * VERSION 1.1.0 - periodic host poll (poe_heartbeat), `poe info`
+ * VERSION 1.0.1 - port->channel direction per board (machine.poe.ch_rev)
  * This code is in the Public Domain.
  *
  * Ported from PR #265 (Tobiasz, "Add chip-agnostic PoE interface and RTL8238B
@@ -59,6 +67,23 @@ __xdata uint8_t  poe_st_on;
 __xdata uint8_t  poe_st_class;
 __xdata uint8_t  poe_st_volt;
 __xdata uint16_t poe_st_ma;
+__xdata uint8_t  poe_poll_enabled = 0;
+static __xdata uint8_t poe_up;		// 1 once an image was uploaded and accepted
+static __xdata uint8_t poe_k;
+static __xdata uint8_t poe_c;
+static __xdata uint8_t poe_admin = 0xff;	// per-port admin state, bit n = port n (0-based)
+static __xdata uint8_t poe_live;	// 1 once the startup config ran: ports may be enabled
+static __xdata uint8_t poe_prev_on;	// ports delivering power at the last sample
+static __xdata uint8_t poe_secs;	// poe_tick() second counter
+static __xdata uint8_t poe_v2;		// last port voltage in 0.5 V units
+static __xdata uint32_t poe_energy[8];	// per port, in units of mW x 10 s
+static __xdata uint8_t poe_dig[10];
+
+extern __xdata uint8_t outbuf[TCP_OUTBUF_SIZE];
+extern __xdata uint16_t slen;
+void char_to_html(char c);
+void str_code_to_html(__code const char *s);
+#define POE_SAMPLE_SECS 10
 
 // Scratch kept in xdata: the 8051 overlay segment is full on this firmware.
 static __xdata uint8_t  poe_resp[8];	// bytes read back by bb_read_reg()
@@ -250,16 +275,17 @@ static void bb_busrecover(void)
 }
 
 /* Map 0-based port poe_n -> controller (poe_rdslave) and channel (poe_local).
- * Per PR #265: ports 0-3 on addr0 as channels 3,2,1,0; ports 4-7 on addr1 as 0..3.
- * NOT yet verified on the PSW8-25MG: check with `poe status` and a PD. */
+ * Ports 0-3 on addr0, 4-7 on addr1; channel order per controller from
+ * machine.poe.ch_rev (PR #265's keepLink has addr0 reversed: 0x01; the
+ * PSW8-25MG V1.2 runs both straight: 0x00). */
 static void port_map(void)
 {
 	if (poe_n < 4) {
 		poe_rdslave = machine.poe.addr0;
-		poe_local = 3 - poe_n;
+		poe_local = (machine.poe.ch_rev & 0x01) ? 3 - poe_n : poe_n;
 	} else {
 		poe_rdslave = machine.poe.addr1;
-		poe_local = poe_n - 4;
+		poe_local = (machine.poe.ch_rev & 0x02) ? 7 - poe_n : poe_n - 4;
 	}
 }
 
@@ -287,6 +313,18 @@ static void ports_admin_all(void)
 {
 	for (poe_n = 0; poe_n < machine.poe.n_ports; poe_n++)
 		port_admin();
+}
+
+/* Enable/disable every port according to the poe_admin mask. */
+static void ports_admin_mask(void)
+{
+	for (poe_n = 0; poe_n < machine.poe.n_ports; poe_n++) {
+		poe_set = (poe_admin >> poe_n) & 1;
+		port_admin();
+	}
+	print_string("PoE: ports enabled, mask 0x");
+	print_byte(poe_admin);
+	write_char('\n');
 }
 
 /* ---------------- bring-up ---------------- */
@@ -398,27 +436,116 @@ static void poe_upload(void)
 		write_char(' ');
 	}
 	print_string((poe_resp[0] & 0x20) ? "=> ACCEPTED\n" : "=> REJECTED\n");
+	poe_up = (poe_resp[0] & 0x20) ? 1 : 0;
 
 	delay(100);
 
-	// Step 4: enable all ports (auto-detect). The OEM restores saved per-port
-	// config here; we have none, so every port is enabled.
-	poe_set = 1;
-	ports_admin_all();
-	print_string("PoE: all ports enabled\n");
+	// Step 4: enable the ports (auto-detect) that are administratively on. At
+	// boot this waits for poe_apply(), after the startup config has run, so a
+	// port saved as off is never powered.
+	if (poe_live)
+		ports_admin_mask();
+}
+
+/*
+ * Called as early as possible at boot (right after flash_init): the PSE's mask
+ * bootloader auto-detects and powers PDs on its own at power-on, and the
+ * bring-up later resets the chip, which would power-cycle them a second time.
+ * Turning every port off here keeps them off until the bring-up enables them.
+ */
+void poe_hold(void) __banked
+{
+	if (machine.poe.chip == POE_NONE)
+		return;
+	bb_setup();
+	bb_busrecover();
+	poe_rdslave = machine.poe.addr0;
+	bb_ports_off();
+	if (machine.poe.addr1) {
+		poe_rdslave = machine.poe.addr1;
+		bb_ports_off();
+	}
 }
 
 void poe_bringup(void) __banked
 {
 	if (machine.poe.chip == POE_NONE)
 		return;
+	poe_up = 0;
+	poe_prev_on = 0;
 	poe_upload();
+}
+
+/* Called once after the startup config has been executed: from now on ports
+ * follow the admin mask (which the config may have changed with `poe port`). */
+void poe_apply(void) __banked
+{
+	poe_live = 1;
+	if (machine.poe.chip == POE_NONE || !poe_up)
+		return;
+	bb_setup();
+	ports_admin_mask();
+}
+
+/* Host poll: read the reg 0x10 status block of each controller, the same
+ * kind of status access the OEM web UI does continuously. */
+void poe_heartbeat(void) __banked
+{
+	if (!poe_up || !poe_poll_enabled)
+		return;
+	bb_setup();
+	poe_rdslave = machine.poe.addr0;
+	poe_reg = 0x10;	poe_rd_len = 4;	bb_read_reg();
+	if (machine.poe.addr1) {
+		poe_rdslave = machine.poe.addr1;
+		poe_reg = 0x10;	poe_rd_len = 4;	bb_read_reg();
+	}
+}
+
+static void info_reg(void)
+{
+	bb_read_reg();
+	print_string(" ");
+	print_byte(poe_reg);
+	write_char('=');
+	for (poe_k = 0; poe_k < poe_rd_len; poe_k++)
+		print_byte(poe_resp[poe_k]);
+}
+
+void poe_info_print(void) __banked
+{
+	print_string("PoE: image ");
+	print_string(poe_up ? "accepted" : "not loaded");
+	print_string(", host poll ");
+	print_string(poe_poll_enabled ? "on\n" : "off\n");
+	bb_setup();
+	for (poe_c = 0; poe_c < 2; poe_c++) {
+		poe_rdslave = poe_c ? machine.poe.addr1 : machine.poe.addr0;
+		if (!poe_rdslave)
+			break;
+		print_string("0x");
+		print_byte(poe_rdslave);
+		write_char(':');
+		poe_reg = 0xec;	poe_rd_len = 4;	info_reg();
+		poe_reg = 0x1b;	poe_rd_len = 1;	info_reg();
+		poe_reg = 0xe8;	poe_rd_len = 1;	info_reg();
+		poe_reg = 0x0b;	poe_rd_len = 2;	info_reg();
+		poe_reg = 0x10;	poe_rd_len = 4;	info_reg();
+		poe_reg = 0x14;	poe_rd_len = 4;	info_reg();
+		write_char('\n');
+	}
 }
 
 /* ---------------- runtime control and status ---------------- */
 
 void poe_port_set(uint8_t port_num, uint8_t port_on) __banked
 {
+	if (port_on)
+		poe_admin |= (1 << port_num);
+	else
+		poe_admin &= ~(1 << port_num);
+	if (!poe_live || !poe_up)
+		return;		// startup config: applied later by poe_apply()
 	bb_setup();
 	poe_n = port_num;
 	poe_set = port_on;
@@ -428,8 +555,31 @@ void poe_port_set(uint8_t port_num, uint8_t port_on) __banked
 	print_string(port_on ? " enabled\n" : " disabled\n");
 }
 
+/* Power-cycle one port: off, ~2 s, back on (only if administratively on). */
+void poe_port_reset(uint8_t port_num) __banked
+{
+	if (!poe_live || !poe_up || !((poe_admin >> port_num) & 1)) {
+		print_string("PoE: port not enabled\n");
+		return;
+	}
+	bb_setup();
+	poe_n = port_num;
+	poe_set = 0;
+	port_admin();
+	delay(400);
+	poe_n = port_num;
+	poe_set = 1;
+	port_admin();
+	print_string("PoE: port ");
+	itoa(port_num + 1);
+	print_string(" power-cycled\n");
+}
+
 void poe_global_set(uint8_t on) __banked
 {
+	poe_admin = on ? 0xff : 0x00;
+	if (!poe_live || !poe_up)
+		return;
 	bb_setup();
 	poe_set = on;
 	ports_admin_all();
@@ -452,8 +602,17 @@ void poe_get_port(void) __banked
 	poe_reg = 0x10;	poe_rd_len = 4;	bb_read_reg();
 	poe_st_admin = ((poe_resp[2] >> (poe_local << 1)) & 0x03) ? 1 : 0;
 	poe_st_on = (poe_resp[0] >> (poe_local + 4)) & 0x01;
+	if (!poe_st_on) {
+		// Not powered: skip the measurement reads
+		poe_st_class = 0xff;
+		poe_st_volt = 0;
+		poe_v2 = 0;
+		poe_st_ma = 0;
+		return;
+	}
 
 	poe_reg = 0x30 + (poe_local << 2);	poe_rd_len = 4;	bb_read_reg();
+	poe_v2 = poe_resp[3];
 	poe_st_volt = poe_resp[3] >> 1;
 	poe_calc = (uint32_t)(((uint16_t)poe_resp[1] << 8) | poe_resp[0]) * 125UL;
 	poe_st_ma = (uint16_t)(poe_calc >> 12);
@@ -495,6 +654,98 @@ void poe_status_print(void) __banked
 		itoa_short(poe_st_ma);
 		write_char('\n');
 	}
+}
+
+/*
+ * Once-a-second hook from the main loop. Every POE_SAMPLE_SECS: measure all
+ * ports, accumulate energy and report PDs appearing/disappearing (console and
+ * syslog). Also runs the optional host poll (`poe poll on`).
+ */
+void poe_tick(void) __banked
+{
+	if (machine.poe.chip == POE_NONE || !poe_up || !poe_live)
+		return;
+	poe_secs++;
+	if (poe_poll_enabled && !(poe_secs & 1))
+		poe_heartbeat();
+	if (poe_secs < POE_SAMPLE_SECS)
+		return;
+	poe_secs = 0;
+	for (poe_port_num = 0; poe_port_num < machine.poe.n_ports; poe_port_num++) {
+		poe_get_port();
+		poe_c = 1 << poe_port_num;
+		if (poe_st_on) {
+			// mW = (0.5 V units * mA) / 2
+			poe_energy[poe_port_num] += ((uint32_t)poe_v2 * poe_st_ma) >> 1;
+			if (!(poe_prev_on & poe_c)) {
+				poe_prev_on |= poe_c;
+				print_string("PoE: port ");
+				itoa(poe_port_num + 1);
+				print_string(" powered, class ");
+				itoa(poe_st_class);
+				write_char('\n');
+			}
+		} else if (poe_prev_on & poe_c) {
+			poe_prev_on &= ~poe_c;
+			print_string("PoE: port ");
+			itoa(poe_port_num + 1);
+			print_string(" power off\n");
+		}
+	}
+}
+
+/* Decimal output of poe_calc into the HTTP buffer. */
+static void out_dec(void)
+{
+	poe_k = 0;
+	do {
+		poe_dig[poe_k++] = '0' + (uint8_t)(poe_calc % 10);
+		poe_calc /= 10;
+	} while (poe_calc);
+	while (poe_k)
+		char_to_html(poe_dig[--poe_k]);
+}
+
+/*
+ * GET /poe.json:
+ * {"up":true,"budget":150,"ports":[{"port":1,"admin":true,"on":true,
+ *   "class":4,"v2":104,"ma":73,"e":1234}, ...]}
+ * v2 = voltage in 0.5 V units, e = energy since boot in mW x 10 s (Wh = e / 360000),
+ * class 255 = none.
+ */
+void send_poe(void) __banked
+{
+	slen = strtox(outbuf, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n");
+	str_code_to_html("{\"up\":");
+	str_code_to_html(poe_up ? "true" : "false");
+	str_code_to_html(",\"budget\":");
+	poe_calc = machine.poe.budget_w;	out_dec();
+	str_code_to_html(",\"ports\":[");
+	for (poe_port_num = 0; poe_port_num < machine.poe.n_ports; poe_port_num++) {
+		if (poe_up) {
+			poe_get_port();
+		} else {
+			poe_st_on = 0; poe_st_class = 0xff; poe_v2 = 0; poe_st_ma = 0;
+		}
+		if (poe_port_num)
+			char_to_html(',');
+		str_code_to_html("{\"port\":");
+		poe_calc = poe_port_num + 1;	out_dec();
+		str_code_to_html(",\"admin\":");
+		str_code_to_html(((poe_admin >> poe_port_num) & 1) ? "true" : "false");
+		str_code_to_html(",\"on\":");
+		str_code_to_html(poe_st_on ? "true" : "false");
+		str_code_to_html(",\"class\":");
+		poe_calc = poe_st_class;	out_dec();
+		str_code_to_html(",\"v2\":");
+		poe_calc = poe_v2;		out_dec();
+		str_code_to_html(",\"ma\":");
+		poe_calc = poe_st_ma;		out_dec();
+		str_code_to_html(",\"e\":");
+		poe_calc = poe_energy[poe_port_num];	out_dec();
+		char_to_html('}');
+	}
+	str_code_to_html("]}");
 }
 
 #endif /* POE_CHIP_RTL8238 */

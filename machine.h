@@ -95,6 +95,9 @@ struct poe_config {
 	uint8_t addr0;		// first PSE controller I2C address (ports 1-4)
 	uint8_t addr1;		// second controller (ports 5-8), 0 = none
 	uint8_t n_ports;	// number of PoE ports
+	uint8_t budget_w;	// PSU power budget in W (shown in the web UI)
+	uint8_t ch_rev;		// bit0: addr0 channels run reversed (port 1 = ch 3),
+				// bit1: same for addr1 (keepLink KP-9000 = 0x01)
 };
 
 struct sfp_port

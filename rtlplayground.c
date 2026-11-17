@@ -1186,6 +1186,10 @@ static void handle_tick(void)
 			arp_age_secs = 0;
 			uip_arp_timer();
 		}
+#ifdef POE_PRESENT
+		// PoE housekeeping: energy counters, PD events
+		poe_tick();
+#endif
 
 #ifdef DEBUG
 		print_sfr_data();
@@ -1594,6 +1598,11 @@ void main(void)
 	print_string("\nInitializing Flash controller\n");
 	flash_init(machine.flash_sio ? 0 : 1);
 
+#ifdef POE_PRESENT
+	// Keep PoE ports off until the PSE firmware is uploaded (see poe_hold()).
+	poe_hold();
+#endif
+
 	// Set default for SFP pins so we can start up a module already inserted
 	sfp_pins_last = 0x33; // signal LOS and no module inserted (for both slots, even if only 1 present)
 	// We have not detected any link
@@ -1747,6 +1756,10 @@ void main(void)
 	early_boot_handle_button();
 
 	execute_config();
+#ifdef POE_PRESENT
+	// Now that `poe port N off` lines of the config are known, power the ports
+	poe_apply();
+#endif
 	// After the config so the entry lands in the final management VLAN
 	port_l2_static_mgmt(uip_ethaddr.addr, management_vlan, false);
 	/* After the config: a name from it wins, otherwise derive one. */

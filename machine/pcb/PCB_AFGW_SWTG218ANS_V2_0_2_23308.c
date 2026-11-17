@@ -31,6 +31,6 @@ __code const struct machine machine = {
 #ifdef POE_PRESENT
 	// Two PSE controllers on bit-banged I2C, SCL = GPIO46 / SDA = GPIO47 (as in
 	// OEM V100.9.9): 0x20 = ports 1-4, 0x21 = ports 5-8.
-	.poe = { .chip = POE_RTL8238, .addr0 = 0x20, .addr1 = 0x21, .n_ports = 8 },
+	.poe = { .chip = POE_RTL8238, .addr0 = 0x20, .addr1 = 0x21, .n_ports = 8, .budget_w = 150, .ch_rev = 0x00 },
 #endif
 };

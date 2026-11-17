@@ -55,6 +55,18 @@ var LANG = {
         d_system: "System",
         d_traffic: "Traffic",
         d_traffic_h: "packets/s, live",
+        d_poe: "PoE",
+        d_poe_h: "power delivery, live",
+        poe_state: "State",
+        poe_class: "Class",
+        poe_on: "powered",
+        poe_idle: "idle",
+        poe_sum: "{w} W of {b} W - {e} Wh since boot",
+        poe_fw_ok: "PSE firmware loaded",
+        poe_fw_bad: "PSE firmware not loaded",
+        poe_reset: "Reset",
+        poe_reset_t: "Power-cycle PoE on port {p}?",
+        poe_reset_d: "The connected device loses power for about 2 seconds.",
         d_txpps: "TX pps",
         d_rxpps: "RX pps",
         d_txbad: "TX bad",
@@ -1523,6 +1535,18 @@ var LANG = {
         d_system: "Système",
         d_traffic: "Trafic",
         d_traffic_h: "paquets/s (en direct)",
+        d_poe: "PoE",
+        d_poe_h: "alimentation (en direct)",
+        poe_state: "\u00c9tat",
+        poe_class: "Classe",
+        poe_on: "aliment\u00e9",
+        poe_idle: "libre",
+        poe_sum: "{w} W sur {b} W - {e} Wh depuis le d\u00e9marrage",
+        poe_fw_ok: "Firmware PSE charg\u00e9",
+        poe_fw_bad: "Firmware PSE non charg\u00e9",
+        poe_reset: "Red\u00e9marrer",
+        poe_reset_t: "Couper puis r\u00e9tablir le PoE du port {p} ?",
+        poe_reset_d: "L'appareil connect\u00e9 perd son alimentation pendant environ 2 secondes.",
         d_txpps: "TX pps",
         d_rxpps: "RX pps",
         d_txbad: "TX KO",
@@ -2249,6 +2273,9 @@ var S = {
     prevT: 0,
     rates: [],
     mtu: [],
+    poe: null,
+    poeNone: false,
+    poeTick: 0,
 };
 var $ = function(id) {
     return document.getElementById(id)
@@ -2415,6 +2442,7 @@ var CONF_CMDS = [
     /^lldp\s+(on|off)$/,
     /^bw\s+(in|out)\s+\d+\s+\S+$/,
     /^storm\s+\d+\s+(bcast|mcast|ucast|umcast)\s+(off|\d+\s+(pps|kbps))$/,
+    /^poe\s+port\s+\d\s+(on|off)$/,
 ];
 
 function isConfCmd(line) {
@@ -2698,6 +2726,112 @@ function pollStatus() {
         updateStrip();
         var hk = tabHooks[curTab];
         if (hk && hk.status) hk.status();
+        // PoE: every other status poll, on the tabs that show it
+        if (!S.poeNone && (curTab === "dash" || curTab === "ports") && (S.poeTick++ % 2) === 0)
+            poeFetch().catch(function() {});
+    });
+}
+
+// ---- PoE (only on boards whose firmware serves /poe.json) ----
+function poeFetch() {
+    return getJSON("/poe.json").then(function(j) {
+        if (!j || !j.ports) {
+            S.poeNone = true;
+            return;
+        }
+        S.poe = j;
+        document.body.classList.add("haspoe");
+        poeRender();
+    }, function(e) {
+        if (/ 404$/.test(e.message || "")) S.poeNone = true;
+        throw e;
+    });
+}
+
+function poeWatts(p) {
+    return p.on ? p.v2 * p.ma / 2000 : 0;
+}
+
+function poeRender() {
+    var j = S.poe;
+    if (!j) return;
+    var tb = $("poet").tBodies[0],
+        tot = 0,
+        wh = 0;
+    if (tb.rows.length !== j.ports.length) {
+        tb.innerHTML = "";
+        j.ports.forEach(function() {
+            var tr = tb.insertRow();
+            for (var c = 0; c < 7; c++) tr.insertCell().className = c >= 2 ? "num" : "";
+        });
+    }
+    j.ports.forEach(function(p, i) {
+        var w = poeWatts(p),
+            r = tb.rows[i],
+            sp = S.ports[p.port - 1];
+        tot += w;
+        wh += p.e / 360000;
+        r.className = p.on ? "" : "mut";
+        r.cells[0].textContent = sp ? portLabel(sp) : p.port;
+        r.cells[1].innerHTML = !p.admin ? badge(t("c_off")) : (p.on ? badge(t("poe_on"), "ok") : badge(t("poe_idle")));
+        r.cells[2].textContent = p.on && p["class"] !== 255 ? p["class"] : "-";
+        r.cells[3].textContent = p.on ? (p.v2 / 2).toFixed(1) : "-";
+        r.cells[4].textContent = p.on ? p.ma : "-";
+        r.cells[5].textContent = p.on ? w.toFixed(1) : "-";
+        r.cells[6].textContent = p.e ? (p.e / 360000).toFixed(2) : "-";
+    });
+    $("poesum").textContent = t("poe_sum", {
+        w: tot.toFixed(1),
+        b: j.budget,
+        e: wh.toFixed(2)
+    });
+    var bar = $("poebar").firstChild,
+        pct = j.budget ? Math.min(100, tot * 100 / j.budget) : 0;
+    bar.style.width = pct + "%";
+    bar.className = pct > 85 ? "hot" : "";
+    $("poefw").innerHTML = j.up ? badge(t("poe_fw_ok"), "ok") : badge(t("poe_fw_bad"), "bad");
+    poePortsUi();
+}
+
+// Port page: per-port PoE switch (applied at once, saved with "Save to flash") and reset
+function poePortsUi() {
+    if (!S.poe) return;
+    S.poe.ports.forEach(function(p) {
+        var cell = $("ppoe" + (p.port - 1));
+        if (!cell) return;
+        if (!cell.firstChild) {
+            var cb = h("input", {
+                type: "checkbox",
+                id: "ppoesw" + p.port
+            });
+            cb.checked = p.admin;
+            cb.onchange = function() {
+                postCmd("poe port " + p.port + " " + (cb.checked ? "on" : "off")).then(poeFetch, function() {
+                    cb.checked = !cb.checked
+                }).catch(function() {});
+            };
+            cell.appendChild(h("div", {
+                class: "poecell"
+            }, [h("label", {
+                class: "switch"
+            }, [cb, h("i")]), h("button", {
+                class: "ctl",
+                text: t("poe_reset"),
+                onclick: function() {
+                    confirmModal(t("poe_reset_t", {
+                        p: p.port
+                    }), t("poe_reset_d"), function() {
+                        postCmd("poe port " + p.port + " reset").then(poeFetch).catch(function() {});
+                    });
+                }
+            }), h("span", {
+                class: "small mut",
+                id: "ppoew" + p.port
+            })]));
+        }
+        var sw = $("ppoesw" + p.port);
+        if (sw && document.activeElement !== sw) sw.checked = p.admin;
+        $("ppoew" + p.port).textContent = p.on ? poeWatts(p).toFixed(1) + " W" : "";
     });
 }
 var statusPoller = new Poller(pollStatus, 2500);
@@ -3046,6 +3180,9 @@ function buildPorts() {
             max: "16383",
             value: parseInt(p.mtu, 16),
         }));
+        var pc = tr.insertCell();
+        pc.id = "ppoe" + i;
+        pc.className = "poecol";
         tr.insertCell().appendChild(h("button", {
             class: "ctl",
             text: t("c_apply"),
@@ -3069,6 +3206,7 @@ function portsStatus() {
             v = p.isSFP ? 0 : ADVSEL[parseInt(p.adv, 2)];
         if (sel && v && document.activeElement !== sel) sel.value = v;
     });
+    poePortsUi();
 }
 
 function applyPort(i) {
@@ -5068,6 +5206,12 @@ function mergeConf(base, texts) {
             if ((m = line.match(/^(port \d{1,2} lldp) (permit|block)$/))) {
                 drop(new RegExp("^" + m[1] + " (permit|block)$"));
                 conf.push(line);
+                return;
+            }
+            if ((m = line.match(/^(poe port \d) (on|off)$/))) {
+                // PoE ports are on by default: only "off" is kept in the config
+                drop(new RegExp("^" + m[1] + " (on|off)$"));
+                if (m[2] === "off") conf.push(line);
                 return;
             }
             if (line === "ip dhcp") drop(/^(netmask|gw|dns server) /);

@@ -1893,14 +1893,22 @@ void cmd_parser(void) __banked
 				poe_status_print();
 			} else if (cmd_words_len >= 2 && cmd_compare(1, "load")) {
 				poe_bringup();
+			} else if (cmd_words_len >= 2 && cmd_compare(1, "info")) {
+				poe_info_print();
+			} else if (cmd_words_len >= 3 && cmd_compare(1, "poll")) {
+				poe_poll_enabled = cmd_compare(2, "on") ? 1 : 0;
+				print_string(poe_poll_enabled ? "PoE host poll on\n" : "PoE host poll off\n");
 			} else if (cmd_words_len >= 4 && cmd_compare(1, "port")
 				   && atoi_byte(cmd_words_b[2])
 				   && atoi_results_u8 >= 1 && atoi_results_u8 <= machine.poe.n_ports) {
-				poe_port_set(atoi_results_u8 - 1, cmd_compare(3, "on") ? 1 : 0);
+				if (cmd_compare(3, "reset"))
+					poe_port_reset(atoi_results_u8 - 1);
+				else
+					poe_port_set(atoi_results_u8 - 1, cmd_compare(3, "on") ? 1 : 0);
 			} else if (cmd_words_len >= 3 && cmd_compare(1, "global")) {
 				poe_global_set(cmd_compare(2, "on") ? 1 : 0);
 			} else {
-				print_string("usage: poe status | load | port <1-8> <on|off> | global <on|off>\n");
+				print_string("usage: poe status | info | load | poll <on|off> | port <1-8> <on|off|reset> | global <on|off>\n");
 			}
 #else
 			print_string("PoE not supported on this machine\n");
