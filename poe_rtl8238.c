@@ -1,5 +1,14 @@
 /*
  * Driver for the Realtek RTL8238B/C (and RTL8239-family) PoE PSE controllers.
+ * VERSION 1.5.1 - the running-firmware check is also done at the late boot hook
+ *                 (the early one may not reach the PSE); boot decisions are
+ *                 recorded and shown by `poe info`
+ * VERSION 1.5.0 - no PoE power cycle on reboot: if the PSE firmware is already
+ *                 running (warm reboot) it is kept and nothing is reset; on a
+ *                 cold start the upload now runs right after flash init
+ *                 instead of after the PHY init. `poe load` still forces it.
+ * VERSION 1.4.0 - link watchdog: `poe watchdog N <minutes|off>` power-cycles a
+ *                 port that delivers power but has had no link for that long
  * VERSION 1.3.0 - web UI support: /poe.json (send_poe), per-port admin mask
  *                 applied after the startup config (poe_apply, no flicker on
  *                 ports saved as off), `poe port N reset`, energy counters and
@@ -78,6 +87,15 @@ static __xdata uint8_t poe_secs;	// poe_tick() second counter
 static __xdata uint8_t poe_v2;		// last port voltage in 0.5 V units
 static __xdata uint32_t poe_energy[8];	// per port, in units of mW x 10 s
 static __xdata uint8_t poe_dig[10];
+// Boot diagnostics for `poe info`: [0..2] early hook, [3..5] late hook:
+// address ACK, reg 0xec, action (0 none, 1 kept running firmware, 2 uploaded, 3 deferred)
+static __xdata uint8_t poe_dbg[6];
+static __xdata uint8_t poe_wd_min[8];	// link watchdog per port, minutes (0 = off)
+static __xdata uint8_t poe_wd_cnt[8];	// samples (POE_SAMPLE_SECS each) powered without link
+static __xdata uint8_t poe_wd_pending;	// ports switched off by the watchdog, to re-enable
+static __xdata uint8_t poe_wd_wait;	// seconds since the watchdog switched them off
+#define POE_WD_MAX_MIN 40		// 40 min * 6 samples/min fits the 8-bit counter
+#define POE_WD_OFF_SECS 3
 
 extern __xdata uint8_t outbuf[TCP_OUTBUF_SIZE];
 extern __xdata uint16_t slen;
@@ -447,27 +465,81 @@ static void poe_upload(void)
 		ports_admin_mask();
 }
 
+/* 1 if a PSE controller ACKs its address. */
+static uint8_t pse_probe(void)
+{
+	bb_setup();
+	bb_busrecover();
+	bb_start();
+	bbs.out = machine.poe.addr0 << 1;	bb_write_byte();
+	bb_stop();
+	return bbs.ack;
+}
+
+/* 1 if the PSE application image is loaded and running (reg 0xec bit 5). */
+static uint8_t pse_running(void)
+{
+	poe_rdslave = machine.poe.addr0;
+	poe_reg = 0xec;	poe_rd_len = 4;	bb_read_reg();
+	return (poe_resp[0] != 0xff && (poe_resp[0] & 0x20)) ? 1 : 0;
+}
+
 /*
- * Called as early as possible at boot (right after flash_init): the PSE's mask
- * bootloader auto-detects and powers PDs on its own at power-on, and the
- * bring-up later resets the chip, which would power-cycle them a second time.
- * Turning every port off here keeps them off until the bring-up enables them.
+ * Early boot hook, right after flash_init.
+ *  - Warm reboot: the PSE was not reset and still runs its firmware and powers
+ *    its PDs. Keep it: no reset, no upload, so devices are not power-cycled.
+ *  - Cold start: upload now rather than after the PHY init, so PDs are powered
+ *    once (when the startup config has run) instead of being powered by the
+ *    PSE bootloader and then cut by a late upload.
+ * If the PSE does not answer yet, poe_bringup() retries later.
  */
 void poe_hold(void) __banked
 {
 	if (machine.poe.chip == POE_NONE)
 		return;
-	bb_setup();
-	bb_busrecover();
-	poe_rdslave = machine.poe.addr0;
-	bb_ports_off();
-	if (machine.poe.addr1) {
-		poe_rdslave = machine.poe.addr1;
-		bb_ports_off();
+	poe_up = 0;
+	poe_prev_on = 0;
+	poe_dbg[0] = pse_probe();
+	if (!poe_dbg[0]) {
+		poe_dbg[2] = 3;
+		print_string("PoE: PSE not answering yet, upload deferred\n");
+		return;
 	}
+	poe_k = pse_running();
+	poe_dbg[1] = poe_resp[0];
+	if (poe_k) {
+		poe_up = 1;
+		poe_dbg[2] = 1;
+		print_string("PoE: PSE firmware already running, kept (no power cycle)\n");
+		return;
+	}
+	poe_dbg[2] = 2;
+	poe_upload();
 }
 
+/* Late boot hook (after PHY init): only acts if the early one could not. */
 void poe_bringup(void) __banked
+{
+	if (machine.poe.chip == POE_NONE || poe_up)
+		return;
+	poe_prev_on = 0;
+	poe_dbg[3] = pse_probe();
+	if (poe_dbg[3]) {
+		poe_k = pse_running();
+		poe_dbg[4] = poe_resp[0];
+		if (poe_k) {
+			poe_up = 1;
+			poe_dbg[5] = 1;
+			print_string("PoE: PSE firmware already running, kept (no power cycle)\n");
+			return;
+		}
+	}
+	poe_dbg[5] = 2;
+	poe_upload();
+}
+
+/* `poe load`: force a PSE reset and a fresh upload (power-cycles all PDs). */
+void poe_load(void) __banked
 {
 	if (machine.poe.chip == POE_NONE)
 		return;
@@ -518,6 +590,12 @@ void poe_info_print(void) __banked
 	print_string(poe_up ? "accepted" : "not loaded");
 	print_string(", host poll ");
 	print_string(poe_poll_enabled ? "on\n" : "off\n");
+	print_string("boot: early ack/ec/act, late ack/ec/act =");
+	for (poe_k = 0; poe_k < 6; poe_k++) {
+		write_char(' ');
+		print_byte(poe_dbg[poe_k]);
+	}
+	write_char('\n');
 	bb_setup();
 	for (poe_c = 0; poe_c < 2; poe_c++) {
 		poe_rdslave = poe_c ? machine.poe.addr1 : machine.poe.addr0;
@@ -665,6 +743,17 @@ void poe_tick(void) __banked
 {
 	if (machine.poe.chip == POE_NONE || !poe_up || !poe_live)
 		return;
+	// Watchdog second half: power the ports it switched off back on
+	if (poe_wd_pending && ++poe_wd_wait >= POE_WD_OFF_SECS) {
+		bb_setup();
+		for (poe_n = 0; poe_n < machine.poe.n_ports; poe_n++) {
+			if (((poe_wd_pending & poe_admin) >> poe_n) & 1) {
+				poe_set = 1;
+				port_admin();
+			}
+		}
+		poe_wd_pending = 0;
+	}
 	poe_secs++;
 	if (poe_poll_enabled && !(poe_secs & 1))
 		poe_heartbeat();
@@ -691,7 +780,37 @@ void poe_tick(void) __banked
 			itoa(poe_port_num + 1);
 			print_string(" power off\n");
 		}
+		// Link watchdog: powered but no Ethernet link for poe_wd_min minutes.
+		// PoE port n is physical port n on these boards (link bit n).
+		if (poe_wd_min[poe_port_num] && poe_st_on) {
+			reg_read_m(RTL837X_REG_LINKS_STS);
+			if ((sfr_data[1] >> poe_port_num) & 1) {
+				poe_wd_cnt[poe_port_num] = 0;
+			} else if (++poe_wd_cnt[poe_port_num] >= poe_wd_min[poe_port_num] * 6) {
+				poe_wd_cnt[poe_port_num] = 0;
+				print_string("PoE: port ");
+				itoa(poe_port_num + 1);
+				print_string(" watchdog: no link, power-cycling\n");
+				poe_n = poe_port_num;
+				poe_set = 0;
+				port_admin();
+				poe_wd_pending |= poe_c;
+				poe_wd_wait = 0;
+			}
+		} else {
+			poe_wd_cnt[poe_port_num] = 0;
+		}
 	}
+}
+
+/* Link watchdog for one port (0-based): minutes without link while powered
+ * before the port is power-cycled, 0 = off. */
+void poe_wd_set(uint8_t port_num, uint8_t minutes) __banked
+{
+	if (minutes > POE_WD_MAX_MIN)
+		minutes = POE_WD_MAX_MIN;
+	poe_wd_min[port_num] = minutes;
+	poe_wd_cnt[port_num] = 0;
 }
 
 /* Decimal output of poe_calc into the HTTP buffer. */
@@ -709,9 +828,9 @@ static void out_dec(void)
 /*
  * GET /poe.json:
  * {"up":true,"budget":150,"ports":[{"port":1,"admin":true,"on":true,
- *   "class":4,"v2":104,"ma":73,"e":1234}, ...]}
+ *   "class":4,"v2":104,"ma":73,"e":1234,"wd":0}, ...]}
  * v2 = voltage in 0.5 V units, e = energy since boot in mW x 10 s (Wh = e / 360000),
- * class 255 = none.
+ * class 255 = none, wd = link watchdog in minutes (0 = off).
  */
 void send_poe(void) __banked
 {
@@ -743,6 +862,8 @@ void send_poe(void) __banked
 		poe_calc = poe_st_ma;		out_dec();
 		str_code_to_html(",\"e\":");
 		poe_calc = poe_energy[poe_port_num];	out_dec();
+		str_code_to_html(",\"wd\":");
+		poe_calc = poe_wd_min[poe_port_num];	out_dec();
 		char_to_html('}');
 	}
 	str_code_to_html("]}");

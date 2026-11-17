@@ -1599,7 +1599,7 @@ void main(void)
 	flash_init(machine.flash_sio ? 0 : 1);
 
 #ifdef POE_PRESENT
-	// Keep PoE ports off until the PSE firmware is uploaded (see poe_hold()).
+	// Keep a running PSE (warm reboot) or upload its firmware now (see poe_hold()).
 	poe_hold();
 #endif
 
@@ -1695,8 +1695,7 @@ void main(void)
 	delay(1000);
 
 #ifdef POE_PRESENT
-	// Bring up PoE after the PHY init, as the OEM firmware does: upload the
-	// PSE firmware and enable all ports.
+	// Only if the early hook (poe_hold) could not reach the PSE.
 	poe_bringup();
 #endif
 

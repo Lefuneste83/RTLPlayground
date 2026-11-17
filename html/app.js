@@ -67,6 +67,8 @@ var LANG = {
         poe_reset: "Reset",
         poe_reset_t: "Power-cycle PoE on port {p}?",
         poe_reset_d: "The connected device loses power for about 2 seconds.",
+        poe_wd_off: "WD off",
+        poe_wd_t: "Link watchdog: power-cycle the port when it delivers power but has had no link for this long",
         d_txpps: "TX pps",
         d_rxpps: "RX pps",
         d_txbad: "TX bad",
@@ -1547,6 +1549,8 @@ var LANG = {
         poe_reset: "Red\u00e9marrer",
         poe_reset_t: "Couper puis r\u00e9tablir le PoE du port {p} ?",
         poe_reset_d: "L'appareil connect\u00e9 perd son alimentation pendant environ 2 secondes.",
+        poe_wd_off: "WD off",
+        poe_wd_t: "Chien de garde : coupe puis r\u00e9tablit le PoE si le port est aliment\u00e9 mais sans lien pendant cette dur\u00e9e",
         d_txpps: "TX pps",
         d_rxpps: "RX pps",
         d_txbad: "TX KO",
@@ -2443,6 +2447,7 @@ var CONF_CMDS = [
     /^bw\s+(in|out)\s+\d+\s+\S+$/,
     /^storm\s+\d+\s+(bcast|mcast|ucast|umcast)\s+(off|\d+\s+(pps|kbps))$/,
     /^poe\s+port\s+\d\s+(on|off)$/,
+    /^poe\s+watchdog\s+\d\s+(off|\d{1,2})$/,
 ];
 
 function isConfCmd(line) {
@@ -2793,6 +2798,24 @@ function poeRender() {
     poePortsUi();
 }
 
+function poeWdSel(p) {
+    var sel = h("select", {
+        class: "in",
+        id: "ppoewd" + p.port,
+        title: t("poe_wd_t")
+    });
+    ["off", "2", "5", "10", "30"].forEach(function(v) {
+        sel.appendChild(h("option", {
+            value: v,
+            text: v === "off" ? t("poe_wd_off") : "WD " + v + " min"
+        }));
+    });
+    sel.onchange = function() {
+        postCmd("poe watchdog " + p.port + " " + sel.value).then(poeFetch).catch(function() {});
+    };
+    return sel;
+}
+
 // Port page: per-port PoE switch (applied at once, saved with "Save to flash") and reset
 function poePortsUi() {
     if (!S.poe) return;
@@ -2824,10 +2847,19 @@ function poePortsUi() {
                         postCmd("poe port " + p.port + " reset").then(poeFetch).catch(function() {});
                     });
                 }
-            }), h("span", {
+            }), poeWdSel(p), h("span", {
                 class: "small mut",
                 id: "ppoew" + p.port
             })]));
+        }
+        var ws = $("ppoewd" + p.port);
+        if (ws && document.activeElement !== ws) {
+            if (!ws.querySelector('option[value="' + (p.wd || "off") + '"]'))
+                ws.appendChild(h("option", {
+                    value: String(p.wd),
+                    text: "WD " + p.wd + " min"
+                }));
+            ws.value = p.wd ? String(p.wd) : "off";
         }
         var sw = $("ppoesw" + p.port);
         if (sw && document.activeElement !== sw) sw.checked = p.admin;
@@ -5212,6 +5244,11 @@ function mergeConf(base, texts) {
                 // PoE ports are on by default: only "off" is kept in the config
                 drop(new RegExp("^" + m[1] + " (on|off)$"));
                 if (m[2] === "off") conf.push(line);
+                return;
+            }
+            if ((m = line.match(/^(poe watchdog \d) (off|\d{1,2})$/))) {
+                drop(new RegExp("^" + m[1] + " "));
+                if (m[2] !== "off") conf.push(line);
                 return;
             }
             if (line === "ip dhcp") drop(/^(netmask|gw|dns server) /);

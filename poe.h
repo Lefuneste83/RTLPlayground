@@ -3,7 +3,7 @@
 
 /*
  * Generic, chip-agnostic PoE interface.
- * VERSION 1.3.0 - ported from PR #265 (Tobiasz) to the machine/ board layout.
+ * VERSION 1.5.0 - ported from PR #265 (Tobiasz) to the machine/ board layout.
  *
  * A per-chip driver implements these operations (poe_rtl8238.c, selected by a
  * board's POE_CHIP_* macro in machine/<MACHINE>.h). The console (`poe ...`)
@@ -14,13 +14,15 @@
 
 #include <stdint.h>
 
-/* Bring PoE up: upload the PSE firmware and enable all ports. Run at boot
- * (after PHY init) and on `poe load`. */
+/* Early boot hook (right after flash_init): keeps a PSE whose firmware is
+ * already running (warm reboot, no power cycle), otherwise uploads it. */
+void poe_hold(void) __banked;
+
+/* Late boot hook (after PHY init): uploads only if the early hook could not. */
 void poe_bringup(void) __banked;
 
-/* Turn all PoE ports off, called right after flash_init at boot so PDs are not
- * powered by the PSE bootloader before the bring-up (avoids a double cycle). */
-void poe_hold(void) __banked;
+/* `poe load`: force a PSE reset and fresh upload (power-cycles all PDs). */
+void poe_load(void) __banked;
 
 /* Enable/disable PoE on a single port. port_num is 0-based. */
 void poe_port_set(uint8_t port_num, uint8_t port_on) __banked;
@@ -40,6 +42,10 @@ void poe_apply(void) __banked;
 
 /* Power-cycle one port (0-based): off, ~2 s, on. */
 void poe_port_reset(uint8_t port_num) __banked;
+
+/* Link watchdog for one port (0-based): power-cycle it when it delivers power
+ * but has had no link for `minutes` (1..40), 0 = off. */
+void poe_wd_set(uint8_t port_num, uint8_t minutes) __banked;
 
 /* Once-a-second hook from the main loop: energy counters, PD events, host poll. */
 void poe_tick(void) __banked;
