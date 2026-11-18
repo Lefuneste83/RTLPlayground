@@ -2731,8 +2731,9 @@ function pollStatus() {
         updateStrip();
         var hk = tabHooks[curTab];
         if (hk && hk.status) hk.status();
-        // PoE: every other status poll, on the tabs that show it
-        if (!S.poeNone && (curTab === "dash" || curTab === "ports") && (S.poeTick++ % 2) === 0)
+        // PoE: every other status poll on the tabs with PoE tables, every 4th
+        // elsewhere (keeps the bolt on the port strip current)
+        if (!S.poeNone && (S.poeTick++ % ((curTab === "dash" || curTab === "ports") ? 2 : 4)) === 0)
             poeFetch().catch(function() {});
     });
 }
@@ -2757,9 +2758,19 @@ function poeWatts(p) {
     return p.on ? p.v2 * p.ma / 2000 : 0;
 }
 
+// Yellow bolt on the port strip for every port the PSE is powering
+function poeStrip() {
+    if (!S.poe) return;
+    S.poe.ports.forEach(function(p) {
+        var el = $("pp" + (p.port - 1));
+        if (el) el.classList.toggle("poe", !!p.on);
+    });
+}
+
 function poeRender() {
     var j = S.poe;
     if (!j) return;
+    poeStrip();
     var tb = $("poet").tBodies[0],
         tot = 0,
         wh = 0;
@@ -2929,6 +2940,9 @@ function buildStrip() {
             h("i", {
                 class: "jack"
             }),
+            h("i", {
+                class: "bolt"
+            }),
             h("span", {
                 class: "ps",
                 id: "ppl" + i,
@@ -2950,6 +2964,7 @@ function updateStrip() {
         if (up) el.style.setProperty("--pc", "var(" + "--s" + p.link.replace(/\-[HF]D$/,"").replace("2.5G","2G5").toLowerCase() + ")");
         lb.textContent = !p.enabled ? t("c_off") : (p.link != "DOWN" ? p.link : t("c_down"));
     });
+    poeStrip();
     if (S.tip != null) portTip(S.tip);
     if (S.detail != null) {
         var b = $("mbody");
