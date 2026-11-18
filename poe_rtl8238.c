@@ -38,7 +38,7 @@
  *     bit 5 (accepted). OEM V100.9.9 uploads a 0x52ac (21164) byte image.
  *
  * The image is the vendor's firmware, extracted from the user's own OEM file
- * (stock_fw/extract_pse_image.py) and embedded by the Makefile at PSE_IMG_ADDR.
+ * (tools/poe/extract_pse_image.py, see doc/poe.md) and embedded by the Makefile at PSE_IMG_ADDR.
  * It is self-describing: 16-byte header with magic 0x8239 at bytes [2:3] and
  * four LE section lengths at [6..13]; image_len = 16 + sum(seclen) + 4.
  */
