@@ -6,7 +6,7 @@ HTML_LOCATION = 262144
 
 # PoE PSE firmware image (PoE boards only, see poe_rtl8238.c): a board whose
 # machine/<MACHINE>.h defines POE_CHIP_* gets the vendor PSE image, extracted
-# from its own OEM firmware (stock_fw/extract_pse_image.py), embedded at
+# from its own OEM firmware (tools/poe/extract_pse_image.py, see doc/poe.md), embedded at
 # PSE_IMAGE_LOCATION (0x60000, must match PSE_IMG_ADDR in poe_rtl8238.c).
 # The web UI must then end below it.
 PSE_IMAGE_LOCATION = 393216
