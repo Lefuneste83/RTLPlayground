@@ -6,7 +6,7 @@ RTLPlayground performs the same upload. The image itself is Realtek code, so it 
 
 ## 1. Check that your switch uses this PSE
 
-- Open the case and read the marking on the PoE controller(s), usually near the port magnetics: `RTL8238B` or `RTL8238C`. Note which one; you need it in step 3.
+- Open the case and read the marking on the PoE controller(s), usually near the port magnetics: `RTL8238B` or `RTL8238C`. Note which one; you need it in step 3.2.
 - Boards supported so far: see the machine files that define `POE_CHIP_RTL8238` in `machine/`. Their `.poe` entry in the PCB file gives the I2C addresses (0x20/0x21), the port count and the power budget.
 - The driver has been tested on an RTL8238B board (ZX-AFGW-SWTG218ANS-150, PCB AFG-SWTG118ANS V1.2). RTL8238C boards use the same upload sequence in the OEM firmware, but have not been tested with this driver yet. Reports are welcome.
 
@@ -19,21 +19,92 @@ Any of these works:
 
 The tool finds the image by its header, so the file layout and the firmware version do not matter. Many OEM firmwares carry both a B and a C image and pick one at run time.
 
-## 3. Extract the image
+The OEM file can be anywhere on your disk; the tool takes its path as an argument. If you build with Docker, only the repository is visible inside the container, so put the file in `stock_fw/` (create the folder if needed). `.gitignore` excludes `stock_fw/*.bin`, so neither the OEM file nor the extracted images can be committed by mistake.
 
-From the repository root:
+## 3. Build procedure
+
+Steps 3.1 to 3.4 run from the root of your RTLPlayground clone. The build prerequisites and the SDCC toolchain are the same as for any RTLPlayground build: see the README.
+
+### 3.1 Find your machine name
+
+Your board needs a machine definition with PoE support, that is a `machine/<NAME>.h` containing `#define POE_CHIP_RTL8238`. To list them:
 
 ```
-python3 tools/poe/extract_pse_image.py path/to/oem_firmware.bin --use rtl8238b
+grep -l 'define POE_CHIP_' machine/*.h
 ```
 
-Use `--use rtl8238c` if your controller is a C. The tool:
+`<NAME>` is the file name without `.h`, for example `REALHD_PSW8_25MG_V1_2`. If your board is not listed, PoE support has to be added to its machine definition first (a `.poe` entry in its PCB file, see `machine.h`).
+
+### 3.2 Extract the PSE image
+
+```
+python3 tools/poe/extract_pse_image.py /path/to/oem_firmware.bin --use rtl8238b
+```
+
+Use `--use rtl8238c` if your controller is an RTL8238C (step 1). This writes `stock_fw/pse_image.bin`, the file the build embeds. Details and sample output are in section 4.
+
+Check that it is there:
+
+```
+ls -l stock_fw/pse_image.bin
+```
+
+The size must be 21164 bytes for the known RTL8238B image, 8028 bytes for the known RTL8238C image.
+
+### 3.3 Build
+
+```
+make MACHINE=<NAME>
+```
+
+With Docker, run the extraction and the build in the container:
+
+```
+docker build -t rtlplayground-dev .
+docker run --rm -v $(pwd):/workspace rtlplayground-dev \
+  python3 tools/poe/extract_pse_image.py stock_fw/oem_firmware.bin --use rtl8238b
+docker run --rm -v $(pwd):/workspace rtlplayground-dev make MACHINE=<NAME>
+```
+
+For a machine that defines `POE_CHIP_*`, the Makefile embeds `stock_fw/pse_image.bin` at 0x60000 in the 512 KB image (another file can be given with `PSE_IMAGE=path/to/image.bin`). The Makefile then limits the web UI to the space below 0x60000.
+
+Check the build output. If the image was not found, it prints:
+
+```
+WARNING: stock_fw/pse_image.bin missing - PoE firmware NOT embedded, PoE will stay off
+```
+
+The firmware still builds and runs, but without PoE. Extract the image and run `make` again.
+
+The result is `output/<NAME>/rtlplayground-v<version>-<git>-<NAME>.bin`, also linked as `output/rtlplayground.bin`.
+
+### 3.4 Flash
+
+The PSE image is part of the firmware image, so it is installed with it whatever the method:
+
+- from a running RTLPlayground, with the firmware update page of the web UI;
+- directly to the flash chip with a SOIC clip and a programmer;
+- from the OEM firmware, through the installer (`make -C installer`, see the README). This path has not been tested with PoE yet.
+
+An update from the web UI reboots the switch without cutting its power, like the `reset` command: the PSE keeps running, the new firmware finds it running and keeps it, and the powered devices stay up (section 5). After flashing with a clip, the switch starts from power-off, so the image is uploaded and the PoE devices start with it.
+
+### Changing the PSE image later
+
+Run step 3.2 again, then `make MACHINE=<NAME>`: the build re-embeds the image when `stock_fw/pse_image.bin` is newer than the firmware file. After flashing, the running PSE keeps its old image until the next cold boot (power off and on), or until the `poe load` command, which uploads it at once and power-cycles every powered device.
+
+## 4. The extraction tool
+
+```
+python3 tools/poe/extract_pse_image.py OEM_FILE [OEM_FILE ...] [--use rtl8238b|rtl8238c]
+```
+
+The tool:
 
 - lists every image found, with its offset, chip, size and SHA-256;
 - checks each image's checksum (the container's 32-bit little-endian words sum to zero);
 - marks each image as a known one or as a new one;
 - writes `stock_fw/pse_rtl8238b.bin` and/or `stock_fw/pse_rtl8238c.bin`;
-- with `--use`, also copies the chosen one to `stock_fw/pse_image.bin`, the file the build embeds.
+- with `--use`, also copies the chosen one to `stock_fw/pse_image.bin`.
 
 Example with the V200.1.30 firmware of the ZX-AFGW-SWTG218ANS:
 
@@ -72,16 +143,6 @@ As seen in all files so far, little-endian:
 | 16     | …     | sections, then a 4-byte trailer that makes the container's 32-bit words sum to zero |
 
 Total length = 16 + sum of the section lengths + 4.
-
-## 4. Build and flash
-
-Build as usual for your machine, for example:
-
-```
-make MACHINE=REALHD_PSW8_25MG_V1_2
-```
-
-For a machine that defines `POE_CHIP_*`, the Makefile embeds `stock_fw/pse_image.bin` at 0x60000 (override with `PSE_IMAGE=...`). The web UI then has to end below that address. If the file is missing, the build prints `WARNING: stock_fw/pse_image.bin missing - PoE firmware NOT embedded, PoE will stay off` and the switch runs without PoE.
 
 ## 5. Check that it works
 
