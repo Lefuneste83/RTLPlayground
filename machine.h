@@ -21,6 +21,17 @@
 #define RTL8372 0x72
 #define RTL8373 0x73
 
+/*
+ * PoE: a board with a software-controlled PSE has `#define POE_CHIP_<chip>` in
+ * its PCB source (machine/pcb/<pcb>.c); the Makefile passes it to every file.
+ * It selects the driver (poe_rtl8238.c) and implies POE_PRESENT, which gates the
+ * `poe` command, the boot bring-up and the PSE image embedding in the Makefile.
+ * Boards without it compile no PoE code.
+ */
+#if defined(POE_CHIP_RTL8238)
+#define POE_PRESENT
+#endif
+
 #ifndef MACHINE_CHIPSET
 #error "MACHINE_CHIPSET shall be defined by the selected PCB source or build"
 #endif
@@ -71,6 +82,19 @@ struct high_leds {
 	uint8_t reserved : 2;
 };
 
+// PoE PSE chip type for struct machine.poe (POE_NONE = no software-controlled PoE)
+enum { POE_NONE = 0, POE_RTL8238 = 1 };
+
+struct poe_config {
+	uint8_t chip;		// POE_NONE / POE_RTL8238
+	uint8_t addr0;		// first PSE controller I2C address (ports 1-4)
+	uint8_t addr1;		// second controller (ports 5-8), 0 = none
+	uint8_t n_ports;	// number of PoE ports
+	uint8_t budget_w;	// PSU power budget in W (shown in the web UI)
+	uint8_t ch_rev;		// bit0: addr0 channels run reversed (port 1 = ch 3),
+				// bit1: same for addr1 (keepLink KP-9000 = 0x01)
+};
+
 struct sfp_port
 {
 	uint8_t pin_detect; // gpio number 0-63, 0xFF = don't have it?
@@ -108,6 +132,8 @@ struct machine {
 	// random resets. Costs management-plane speed only, the ASIC keeps
 	// forwarding in hardware.
 	uint8_t flash_sio;
+	// PoE PSE descriptor; chip = POE_NONE (all zero) on boards without PoE
+	struct poe_config poe;
 };
 
 struct machine_runtime

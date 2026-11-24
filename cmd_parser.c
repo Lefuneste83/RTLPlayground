@@ -33,6 +33,7 @@
 #include "machine.h"
 #include "rtl837x_leds.h"
 #include "phy.h"
+#include "poe.h"
 
 #pragma codeseg BANK2
 #pragma constseg BANK2
@@ -1886,6 +1887,43 @@ void cmd_parser(void) __banked
 			parse_sfp();
 		} else if (cmd_compare(0, "stat")) {
 			port_stats_print();
+		} else if (cmd_compare(0, "poe")) {
+#ifdef POE_PRESENT
+			if (cmd_words_len >= 2 && cmd_compare(1, "status")) {
+				poe_status_print();
+			} else if (cmd_words_len >= 2 && cmd_compare(1, "load")) {
+				poe_load();
+			} else if (cmd_words_len >= 2 && cmd_compare(1, "info")) {
+				poe_info_print();
+			} else if (cmd_words_len >= 3 && cmd_compare(1, "poll")) {
+				poe_poll_enabled = cmd_compare(2, "on") ? 1 : 0;
+				print_string(poe_poll_enabled ? "PoE host poll on\n" : "PoE host poll off\n");
+			} else if (cmd_words_len >= 4 && cmd_compare(1, "port")
+				   && atoi_byte(cmd_words_b[2])
+				   && atoi_results_u8 >= 1 && atoi_results_u8 <= machine.poe.n_ports) {
+				if (cmd_compare(3, "reset"))
+					poe_port_reset(atoi_results_u8 - 1);
+				else
+					poe_port_set(atoi_results_u8 - 1, cmd_compare(3, "on") ? 1 : 0);
+			} else if (cmd_words_len >= 4 && cmd_compare(1, "watchdog")
+				   && atoi_byte(cmd_words_b[2])
+				   && atoi_results_u8 >= 1 && atoi_results_u8 <= machine.poe.n_ports) {
+				// Power-cycle a powered port without link: poe watchdog <port> <minutes|off>
+				uint8_t wd_port = atoi_results_u8 - 1;
+				if (cmd_compare(3, "off"))
+					poe_wd_set(wd_port, 0);
+				else if (atoi_byte(cmd_words_b[3]) && atoi_results_u8 >= 1 && atoi_results_u8 <= 40)
+					poe_wd_set(wd_port, atoi_results_u8);
+				else
+					print_string("usage: poe watchdog <1-8> <1-40 minutes|off>\n");
+			} else if (cmd_words_len >= 3 && cmd_compare(1, "global")) {
+				poe_global_set(cmd_compare(2, "on") ? 1 : 0);
+			} else {
+				print_string("usage: poe status | info | load | poll <on|off> | port <1-8> <on|off|reset> | watchdog <1-8> <min|off> | global <on|off>\n");
+			}
+#else
+			print_string("PoE not supported on this machine\n");
+#endif
 		} else if (cmd_compare(0, "flash") && cmd_words_len == 2) {
 			uint8_t c = cmd_buffer[cmd_words_b[1]];
 			if (c == 's') {

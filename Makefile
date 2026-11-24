@@ -104,6 +104,19 @@ ifneq ($(MACHINE_PCB_NAME),)
 endif
 endif
 endif
+# PoE PSE firmware image (PoE boards only, see poe_rtl8238.c and doc/poe.md): a
+# board whose PCB source has `#define POE_CHIP_<chip>` gets that macro on every
+# file and the vendor PSE image, extracted from its own OEM firmware with
+# tools/poe/extract_pse_image.py, embedded at PSE_IMAGE_LOCATION (0x60000, must
+# match PSE_IMG_ADDR in poe_rtl8238.c). The web UI must then end below it.
+PSE_IMAGE_LOCATION = 393216
+PSE_IMAGE ?= stock_fw/pse_image.bin
+POE_MACHINE := $(if $(strip $(MACHINE_PCB_SOURCE)),$(shell sed -n 's/^\#define \(POE_CHIP_[A-Z0-9_]*\).*/\1/p' $(MACHINE_PCB_SOURCE) 2>/dev/null | head -n 1))
+ifneq ($(POE_MACHINE),)
+	MACHINE_CC_FLAGS += -D$(POE_MACHINE)=
+endif
+HTML_LIMIT := $(if $(POE_MACHINE),$(PSE_IMAGE_LOCATION),$(DEFAULT_CONFIG_LOCATION))
+
 # Health instrumentation and the "health" console command: HEALTH=1 gmake ...
 ifneq ($(HEALTH),)
 	CC_FLAGS += -DHEALTH
@@ -248,7 +261,8 @@ SRCS += \
 	rtl837x_storm.c \
 	rtl837x_lacp.c \
 	rtl837x_trap.c \
-	rtl837x_stp_cli.c
+	rtl837x_stp_cli.c \
+	poe_rtl8238.c
 SRCS += \
 	httpd/httpd.c \
 	httpd/page_impl.c \
@@ -290,7 +304,7 @@ $(HTML_MIN_STAMP): $(HTML) html/app.js $(HTML_MIN_LIST) tools/minify.py tools/rj
 	@touch $@
 
 html_data.c html_data.h &: $(HTML_MIN_STAMP) | tools
-	tools/$(BUILDDIR)/fileadder -a $(HTML_LOCATION) -s $(IMAGESIZE) -l $(DEFAULT_CONFIG_LOCATION) -b BANK1 -z -d $(HTML_MIN) -p html_data
+	tools/$(BUILDDIR)/fileadder -a $(HTML_LOCATION) -s $(IMAGESIZE) -l $(HTML_LIMIT) -b BANK1 -z -d $(HTML_MIN) -p html_data
 
 $(VERSION_HEADER): FORCE
 	@printf '%s\n' "#ifndef VERSION_H" "#define VERSION_H" \
@@ -359,13 +373,20 @@ $(BUILDDIR)/rtlplayground.ihx: $(STARTUP_OBJ) $(filter-out $(STARTUP_OBJ) $(MACH
 $(BUILDDIR)/rtlplayground.img: $(BUILDDIR)/rtlplayground.ihx
 	objcopy --input-target=ihex -O binary $< $@
 
-$(OUTPUT): $(BUILDDIR)/rtlplayground.img $(CONFIG) $(CONFIG_STAMP) | tools
+$(OUTPUT): $(BUILDDIR)/rtlplayground.img $(CONFIG) $(CONFIG_STAMP) $(if $(POE_MACHINE),$(wildcard $(PSE_IMAGE))) | tools
 	@mkdir -p "$(dir $@)"
 	if [ -e "$@" ]; then rm "$@"; fi
 	tools/$(BUILDDIR)/imagebuilder -i $(BUILDDIR)/rtlplayground.img "$@"
 	tools/$(BUILDDIR)/fileadder -a $(DEFAULT_CONFIG_LOCATION) -s $(IMAGESIZE) -l $(CONFIG_LOCATION) -d "$(CONFIG)" "$@"
 	tools/$(BUILDDIR)/fileadder -a $(CONFIG_LOCATION) -s $(IMAGESIZE) -l $(IMAGESIZE) -d "$(CONFIG)" "$@"
-	tools/$(BUILDDIR)/fileadder -a $(HTML_LOCATION) -s $(IMAGESIZE) -l $(DEFAULT_CONFIG_LOCATION) -z -d $(HTML_MIN) -b BANK1 "$@"
+	tools/$(BUILDDIR)/fileadder -a $(HTML_LOCATION) -s $(IMAGESIZE) -l $(HTML_LIMIT) -z -d $(HTML_MIN) -b BANK1 "$@"
+	@if [ -n "$(POE_MACHINE)" ]; then \
+		if [ -f "$(PSE_IMAGE)" ]; then \
+			tools/$(BUILDDIR)/fileadder -a $(PSE_IMAGE_LOCATION) -s $(IMAGESIZE) -l $(DEFAULT_CONFIG_LOCATION) -d "$(PSE_IMAGE)" "$@"; \
+		else \
+			echo "WARNING: $(PSE_IMAGE) missing - PoE firmware NOT embedded, PoE will stay off"; \
+		fi; \
+	fi
 	tools/$(BUILDDIR)/crc_calculator -u "$@"
 	if [ "$(OUTPUT)" = "$(BUILDDIR)/rtlplayground-$(FILENAME_EXTENSION).bin" ]; then \
 		ln -sf $(MACHINE)/rtlplayground-$(FILENAME_EXTENSION).bin "$(BUILDDIR)/../rtlplayground.bin"; \

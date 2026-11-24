@@ -90,6 +90,14 @@ section.tab.act{display:block}
 @media (max-width:930px) {
   #lagwrap {grid-template-columns:1fr}
 }
+.poecol,#poecard{display:none}
+body.haspoe .poecol{display:table-cell}
+body.haspoe #poecard{display:block}
+#poebar{height:6px;border-radius:3px;background:var(--bd);overflow:hidden;margin:6px 0 12px}
+#poebar i{display:block;height:100%;width:0;background:var(--ok);transition:width .3s}
+#poebar i.hot{background:var(--warn)}
+#poet th,#poet td{padding-left:5px;padding-right:5px;white-space:nowrap}
+.poecell{display:flex;align-items:center;gap:8px;white-space:nowrap}
 table.t{width:100%;border-collapse:collapse;font-size:13px}
 table.t th{
   text-align:left;font-weight:600;color:var(--fg2);font-size:12px;
@@ -148,6 +156,10 @@ label.row span.lb{width:110px;flex:none;color:var(--fg2);font-size:13px}
 .port.up.sfp .jack:before{background-color:color-mix(in srgb,var(--pc) 10%,var(--panel2))}
 .port.up .ps{color:var(--pc);font-weight:600}
 .port.dis{opacity:.45;border-style:dashed}
+.port .bolt{display:none;position:absolute;top:2px;right:2px;width:9px;height:13px;filter:drop-shadow(0 0 1px rgba(0,0,0,.55))}
+.port .bolt:before{content:"";position:absolute;inset:0;background:#f5c400;
+  clip-path:polygon(62% 0,8% 58%,44% 58%,32% 100%,92% 38%,56% 38%)}
+.port.poe .bolt{display:block}
 .badge{font-size:11px;font-weight:600;border-radius:10px;padding:1px 8px;background:var(--panel2);color:var(--fg2)}
 .badge.ok{color:var(--ok)}.badge.bad{color:var(--bad)}
 .seg{display:inline-flex;border:1px solid var(--bd);border-radius:7px;overflow:hidden}
@@ -266,13 +278,20 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
             <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_link">Link</th><th class="num" data-i18n="d_txpps">TX pps</th><th class="num" data-i18n="d_rxpps">RX pps</th><th class="num" data-i18n="d_txbad">TX bad</th><th class="num" data-i18n="d_rxbad">RX bad</th></tr></thead>
             <tbody></tbody></table></div>
         </div>
+        <div class="card" id="poecard"><h2><span data-i18n="d_poe">PoE</span> <span class="hint" data-i18n="d_poe_h">power delivery, live</span></h2>
+          <div class="small"><span id="poesum"></span> <span id="poefw"></span></div>
+          <div id="poebar"><i></i></div>
+          <div class="scrollx"><table class="t" id="poet">
+            <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="poe_state">State</th><th class="num" data-i18n="poe_class">Class</th><th class="num">V</th><th class="num">mA</th><th class="num">W</th><th class="num">Wh</th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
       </div>
     </section>
 
     <section class="tab" id="tab-ports">
       <div class="card"><h2 data-i18n="pt_title">Port configuration</h2>
         <div class="scrollx"><table class="t" id="ptable">
-          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_conn">Devices learned</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th></th></tr></thead>
+          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_conn">Devices learned</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th class="poecol">PoE</th><th></th></tr></thead>
           <tbody></tbody></table></div>
         <p class="small mut" style="margin-top:8px" data-i18n="pt_sfp_note">SFP speed is set per slot and is not saved in the startup config.</p>
       </div>
